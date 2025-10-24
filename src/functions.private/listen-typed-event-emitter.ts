@@ -13,18 +13,18 @@ export interface TypedEventEmitter<TEvents extends Record<keyof TEvents, EventHa
 // export type InferTypedEventEvents<GTarget extends TypedEventEmitter<any>> =
 //   GTarget extends TypedEventEmitter<infer TEvents> ? TEvents : never;
 
-export function listenTypedEventEmitter<
-  TEvents extends Record<keyof TEvents, EventHandler>,
-  TEvent extends keyof TEvents,
->(target: TypedEventEmitter<TEvents>, event: TEvent, callback: TEvents[TEvent]): Disposable {
-  target.on<TEvent>(event, callback);
-
-  return {
-    [Symbol.dispose](): void {
-      target.off<TEvent>(event, callback);
-    },
-  };
-}
+// export function listenTypedEventEmitter<
+//   TEvents extends Record<keyof TEvents, EventHandler>,
+//   TEvent extends keyof TEvents,
+// >(target: TypedEventEmitter<TEvents>, event: TEvent, callback: TEvents[TEvent]): Disposable {
+//   target.on<TEvent>(event, callback);
+//
+//   return {
+//     [Symbol.dispose](): void {
+//       target.off<TEvent>(event, callback);
+//     },
+//   };
+// }
 
 export function addTypedEventEmitterListener<
   TEvents extends Record<keyof TEvents, EventHandler>,

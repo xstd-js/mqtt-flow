@@ -1,4 +1,14 @@
 import { abortify } from '@xstd/abortable';
+import { getAsyncEnumeratorNextValue } from '@xstd/enumerable';
+import {
+  Drain,
+  type PushBridge,
+  type PushToPullOptions,
+  ReadableFlow,
+  type ReadableFlowContext,
+  type ReadableFlowForkOptions,
+  type ReadableFlowIterator,
+} from '@xstd/flow';
 import mqtt, {
   type IDisconnectPacket,
   type IPublishPacket,
@@ -6,15 +16,6 @@ import mqtt, {
   type MqttClient,
   type MqttClientEventCallbacks,
 } from 'mqtt';
-import { Drain } from '../../drain/drain.js';
-
-import { getAsyncEnumeratorNextValue } from '@xstd/enumerable';
-import { ReadableFlow } from '../../flow/readable/readable-flow.js';
-import { type ReadableFlowForkOptions } from '../../flow/readable/types/methods/fork/readable-flow-fork-options.js';
-import { type ReadableFlowContext } from '../../flow/readable/types/readable-flow-context.js';
-import { type ReadableFlowIterator } from '../../flow/readable/types/readable-flow-iterator.js';
-import { type PushBridge } from '../../flow/readable/types/static-methods/from-push-source/push-bridge.js';
-import { type PushToPullOptions } from '../../flow/readable/types/static-methods/from-push-source/push-to-pull-options.js';
 import { addTypedEventEmitterListener } from './functions.private/listen-typed-event-emitter.js';
 import { MqttTopic } from './topic/mqtt-topic.js';
 
@@ -23,11 +24,12 @@ export interface MqttOptions extends ReadableFlowForkOptions {
   readonly username?: string;
   readonly password?: string;
 }
+export type MqttQos = 0 | 1 | 2;
 
 export interface MqttUpPacket {
   readonly topic: string;
   readonly payload: string | Uint8Array;
-  readonly qos?: 0 | 1 | 2;
+  readonly qos?: MqttQos;
   readonly retain?: boolean;
   readonly dup?: boolean;
 }
@@ -38,10 +40,10 @@ export interface MqttDownPacket {
 }
 
 export interface MqttSubscriptionOptions {
-  readonly qos?: 0 | 1 | 2;
+  readonly qos?: MqttQos;
   readonly noLocal?: boolean;
   readonly retainAsPublished?: boolean;
-  readonly retainHandling?: 0 | 1 | 2;
+  readonly retainHandling?: MqttQos;
 }
 
 export class MqttFlow {

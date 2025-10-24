@@ -38,6 +38,8 @@
     "type": "lib"
   },
   "dependencies": {
+    "@xstd/abortable": "^1.2.2",
+    "@xstd/enumerable": "^0.9.0",
     "@xstd/flow": "^0.9.0",
     "mqtt": "^5.14.0"
   }
