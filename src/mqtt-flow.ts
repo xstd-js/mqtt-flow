@@ -9,6 +9,7 @@ import {
   type ReadableFlowForkOptions,
   type ReadableFlowIterator,
 } from '@xstd/flow';
+import { MqttTopic } from '@xstd/mqtt-topic';
 import mqtt, {
   type IDisconnectPacket,
   type IPublishPacket,
@@ -17,7 +18,6 @@ import mqtt, {
   type MqttClientEventCallbacks,
 } from 'mqtt';
 import { addTypedEventEmitterListener } from './functions.private/listen-typed-event-emitter.js';
-import { MqttTopic } from './topic/mqtt-topic.js';
 
 export interface MqttOptions extends ReadableFlowForkOptions {
   readonly clientId?: string;
