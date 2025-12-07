@@ -1,7 +1,7 @@
 import { NEVER_ABORTED } from '@xstd/abortable';
 import { type PushToPullOptions, ReadableFlow } from '@xstd/flow';
 import { describe, expect, it } from 'vitest';
-import { MqttDownPacket, MqttFlow } from './mqtt-flow.js';
+import { MqttFlow, MqttFlowDownPacket } from './mqtt-flow.js';
 
 describe('MqttFlow', () => {
   it('should work', { timeout: 10000 }, async () => {
@@ -10,10 +10,10 @@ describe('MqttFlow', () => {
 
     const topic = `topic-${crypto.randomUUID()}`;
     // const topic = `topic-abcdefg`;
-    const subscription: ReadableFlow<MqttDownPacket, [options?: PushToPullOptions]> =
+    const subscription: ReadableFlow<MqttFlowDownPacket, [options?: PushToPullOptions]> =
       client.subscription(topic);
 
-    const packetPromise: Promise<MqttDownPacket> = subscription.first(NEVER_ABORTED);
+    const packetPromise: Promise<MqttFlowDownPacket> = subscription.first(NEVER_ABORTED);
 
     const text = 'Hello world !';
 
@@ -28,7 +28,7 @@ describe('MqttFlow', () => {
       NEVER_ABORTED,
     );
 
-    const packet: MqttDownPacket = await packetPromise;
+    const packet: MqttFlowDownPacket = await packetPromise;
 
     expect(packet.topic).toBe(topic);
     expect(new TextDecoder().decode(packet.payload)).toBe(text);

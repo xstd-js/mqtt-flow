@@ -1,85 +1,53 @@
-import { abortify } from '@xstd/abortable';
+import { type Abortable } from '@xstd/abortable';
+import { CompleteError } from '@xstd/custom-error';
 import { getAsyncEnumeratorNextValue } from '@xstd/enumerable';
 import {
   Drain,
+  Flow,
+  type FlowContext,
+  type FlowForkOptions,
+  type FlowIterator,
   type PushBridge,
   type PushToPullOptions,
-  ReadableFlow,
-  type ReadableFlowContext,
-  type ReadableFlowForkOptions,
-  type ReadableFlowIterator,
 } from '@xstd/flow';
-import { MqttTopic } from '@xstd/mqtt-topic';
-import mqtt, {
-  type IDisconnectPacket,
-  type IPublishPacket,
-  type ISubscriptionGrant,
-  type MqttClient,
-  type MqttClientEventCallbacks,
-} from 'mqtt';
-import { addTypedEventEmitterListener } from './functions.private/listen-typed-event-emitter.js';
+import {
+  type MqttPublishPacket,
+  MqttResource,
+  type MqttResourceOpenOptions,
+  type MqttResourcePublishOptions,
+  type MqttResourcePublishPayload,
+  type MqttResourceSubscribeOptions,
+  type MqttSubscriptionResource,
+} from '@xstd/mqtt-resource';
 
-export interface MqttOptions extends ReadableFlowForkOptions {
-  readonly clientId?: string;
-  readonly username?: string;
-  readonly password?: string;
-}
-export type MqttQos = 0 | 1 | 2;
+export interface MqttFlowOptions
+  extends Omit<MqttResourceOpenOptions, keyof Abortable>, FlowForkOptions {}
 
-export interface MqttUpPacket {
+export interface MqttFlowUpPacket extends MqttResourcePublishOptions {
   readonly topic: string;
-  readonly payload: string | Uint8Array;
-  readonly qos?: MqttQos;
-  readonly retain?: boolean;
-  readonly dup?: boolean;
+  readonly payload: MqttResourcePublishPayload;
 }
 
-export interface MqttDownPacket {
-  readonly topic: string;
-  readonly payload: Uint8Array;
-}
+export interface MqttFlowDownPacket extends MqttPublishPacket {}
 
-export interface MqttSubscriptionOptions {
-  readonly qos?: MqttQos;
-  readonly noLocal?: boolean;
-  readonly retainAsPublished?: boolean;
-  readonly retainHandling?: MqttQos;
-}
+export interface MqttFlowSubscriptionOptions extends Omit<
+  MqttResourceSubscribeOptions,
+  keyof Abortable
+> {}
 
 export class MqttFlow {
-  readonly #sharedMqttClientFlow: ReadableFlow<MqttClient>;
+  readonly #sharedMqttClientFlow: Flow<MqttResource>;
 
-  readonly #up: Drain<MqttUpPacket>;
-  readonly #subscriptions: Map<string /* key */, ReadableFlow<MqttClient>>;
-  readonly #activeSubscriptions: Set<string /* topic */>;
+  readonly #up: Drain<MqttFlowUpPacket>;
 
-  constructor(url: string | URL, mqttOptions?: MqttOptions) {
-    this.#sharedMqttClientFlow = new ReadableFlow<MqttClient>(async function* ({
+  constructor(url: string | URL, mqttOptions?: MqttFlowOptions) {
+    this.#sharedMqttClientFlow = new Flow<MqttResource>(async function* ({
       signal,
-    }: ReadableFlowContext): ReadableFlowIterator<MqttClient> {
+    }: FlowContext): FlowIterator<MqttResource> {
       signal.throwIfAborted();
+      await using client: MqttResource = await MqttResource.open(url, mqttOptions);
 
-      await using stack: AsyncDisposableStack = new AsyncDisposableStack();
-
-      const client: MqttClient = stack.adopt(
-        await mqtt.connectAsync(url.toString(), {
-          ...mqttOptions,
-          reconnectPeriod: 0,
-          autoUseTopicAlias: true,
-          autoAssignTopicAlias: true,
-        }),
-        (client: MqttClient): Promise<void> => {
-          return client.endAsync();
-        },
-      );
-
-      signal.throwIfAborted();
-
-      // TODO
-      client.setMaxListeners(20);
-      // client.setMaxListeners(50);
-
-      while (client.connected) {
+      while (!client.closeSignal.aborted) {
         yield client;
         signal.throwIfAborted();
       }
@@ -87,164 +55,65 @@ export class MqttFlow {
       throw new Error('MqttClient closed.');
     }).fork(mqttOptions);
 
-    this.#up = new Drain<MqttUpPacket>(
-      async (flow: ReadableFlow<MqttUpPacket>, signal: AbortSignal): Promise<void> => {
+    this.#up = new Drain<MqttFlowUpPacket>(
+      async (flow: Flow<MqttFlowUpPacket>, signal: AbortSignal): Promise<void> => {
         signal.throwIfAborted();
 
         await using stack: AsyncDisposableStack = new AsyncDisposableStack();
 
-        const client: MqttClient = await getAsyncEnumeratorNextValue(
+        const client: MqttResource = await getAsyncEnumeratorNextValue(
           stack.use(this.#sharedMqttClientFlow.open(signal)),
         );
 
         for await (const { topic, payload, ...options } of flow.open(signal)) {
-          await abortify(client.publishAsync(topic, payload as any, options), {
+          await client.publish(topic, payload, {
+            ...options,
             signal,
           });
         }
       },
     );
-
-    this.#subscriptions = new Map<string, ReadableFlow<MqttClient>>();
-    this.#activeSubscriptions = new Set<string>();
   }
 
-  get up(): Drain<MqttUpPacket> {
+  get up(): Drain<MqttFlowUpPacket> {
     return this.#up;
   }
 
   subscription(
     topic: string,
-    {
-      qos = 0,
-      noLocal = false,
-      retainAsPublished = false,
-      retainHandling = 0,
-    }: MqttSubscriptionOptions = {},
-  ): ReadableFlow<MqttDownPacket, [options?: PushToPullOptions]> {
-    const key: string = JSON.stringify([topic, qos, noLocal, retainAsPublished, retainHandling]);
-
-    let subscription: ReadableFlow<MqttClient> | undefined = this.#subscriptions.get(key);
-
-    if (subscription === undefined) {
-      const self: this = this;
-
-      subscription = new ReadableFlow<MqttClient>(async function* ({
-        signal,
-      }: ReadableFlowContext): ReadableFlowIterator<MqttClient> {
-        signal.throwIfAborted();
-
-        // LOCK SUBSCRIPTION
-
-        if (self.#activeSubscriptions.has(topic)) {
-          throw new Error(`Subscription to "${topic}" already locked.`);
-        }
-
-        await using stack: AsyncDisposableStack = new AsyncDisposableStack();
-
-        self.#activeSubscriptions.add(topic);
-
-        stack.defer((): void => {
-          self.#activeSubscriptions.delete(topic);
-        });
-
-        // GET CLIENT
-
-        const client: MqttClient = await getAsyncEnumeratorNextValue(
-          stack.use(self.#sharedMqttClientFlow.open(signal)),
-        );
-
-        // SUBSCRIBE
-        {
-          const [granted]: readonly ISubscriptionGrant[] = stack.adopt(
-            await client.subscribeAsync(topic, {
-              qos,
-              nl: noLocal,
-              rap: retainAsPublished,
-              rh: retainHandling,
-            }),
-            (): Promise<any> => {
-              return client.unsubscribeAsync(topic);
-            },
-          );
-
-          signal.throwIfAborted();
-
-          if (qos !== undefined && granted.qos < qos) {
-            throw new Error(
-              `Cannot subscribe to "${topic}" with a qos of ${qos}. Granted ${granted.qos}.`,
-            );
-          }
-        }
-
-        while (client.connected) {
-          yield client;
-          signal.throwIfAborted();
-        }
-
-        throw new Error('MqttClient closed.');
-      }).fork();
-
-      this.#subscriptions.set(key, subscription);
-    }
-
-    return subscription.flatMap(
-      (client: MqttClient): ReadableFlow<MqttDownPacket, [options?: PushToPullOptions]> => {
-        if (!client.connected) {
-          throw new Error('MqttClient closed.');
-        }
-
-        return ReadableFlow.fromPushSource<MqttDownPacket>(
-          ({ next, error, complete, signal }: PushBridge<MqttDownPacket>): void => {
-            // ON ERROR
-            addTypedEventEmitterListener<MqttClientEventCallbacks, 'error'>(
-              client,
-              'error',
-              (_error: unknown): void => {
-                error(_error);
-              },
-              signal,
+    options?: MqttFlowSubscriptionOptions,
+  ): Flow<MqttFlowDownPacket, [options?: PushToPullOptions]> {
+    return this.#sharedMqttClientFlow.flatMap(
+      (client: MqttResource): Flow<MqttFlowDownPacket, [options?: PushToPullOptions]> => {
+        return Flow.fromPushSource<MqttFlowDownPacket>(
+          async ({
+            next,
+            error,
+            complete,
+            signal,
+            stack,
+          }: PushBridge<MqttFlowDownPacket>): Promise<void> => {
+            const subscription: MqttSubscriptionResource = stack.use(
+              await client.subscribe(topic, options),
             );
 
-            // ON DISCONNECT
-            addTypedEventEmitterListener<MqttClientEventCallbacks, 'disconnect'>(
-              client,
-              'disconnect',
-              (packet: IDisconnectPacket): void => {
-                if (packet.reasonCode === undefined || packet.reasonCode === 0x00) {
-                  complete();
-                } else {
-                  error(new Error('Disconnected', { cause: packet }));
-                }
-              },
-              signal,
-            );
+            subscription.listen(next);
 
-            // ON END
-            addTypedEventEmitterListener<MqttClientEventCallbacks, 'end'>(
-              client,
-              'end',
+            subscription.closeSignal.addEventListener(
+              'abort',
               (): void => {
-                error(new Error('Client ended'));
-              },
-              signal,
-            );
-
-            // ON MESSAGE
-            const topicMatcher: MqttTopic = new MqttTopic(topic);
-
-            addTypedEventEmitterListener<MqttClientEventCallbacks, 'message'>(
-              client,
-              'message',
-              (topic: string, payload: Buffer, _packet: IPublishPacket): void => {
-                if (topicMatcher.matches(topic)) {
-                  next({
-                    topic,
-                    payload,
-                  });
+                if (!signal.aborted) {
+                  const reason: unknown = subscription.closeSignal.reason;
+                  if (reason instanceof CompleteError) {
+                    complete();
+                  } else {
+                    error(reason);
+                  }
                 }
               },
-              signal,
+              {
+                signal,
+              },
             );
           },
         );
